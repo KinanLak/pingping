@@ -19,7 +19,7 @@
 // --- Constantes de configuration pour la compilation ---
 #define IP_RANGE_START "14.0.0.0"
 #define IP_RANGE_END "14.5.255.255"
-#define PING_TIMEOUT_MS 20
+#define PING_TIMEOUT_MS 1000
 #define PING_THREADS_DEFAULT 96
 #define PING_PROGRESS_STEP 16384
 
@@ -85,8 +85,14 @@ private:
         int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
         if (sockfd < 0) {
             // Fallback: utiliser la commande ping système (syntaxe macOS)
-            std::string cmd = "ping -c 1 -W " + std::to_string(timeout_ms) + " " + ip + " > /dev/null 2>&1";
-            return system(cmd.c_str()) == 0;
+            int timeout_sec = std::max(1, timeout_ms / 1000);
+            std::string cmd = "ping -c 1 -W " + std::to_string(timeout_sec) + " " + ip + " > /dev/null 2>&1";
+            bool result = system(cmd.c_str()) == 0;
+            if (result) {
+                std::lock_guard<std::mutex> lock(output_mutex);
+                active_responses++;
+            }
+            return result;
         }
 
         struct sockaddr_in addr;
@@ -139,10 +145,13 @@ private:
             if (ip_hdr->ip_p == IPPROTO_ICMP) {
                 struct icmp* recv_icmp = (struct icmp*)(buffer + (ip_hdr->ip_hl << 2));
                 if (recv_icmp->icmp_type == ICMP_ECHOREPLY) {
-                    std::lock_guard<std::mutex> lock(output_mutex);
-                    //std::cout << "✓ " << ip << " - " << duration.count() << "ms" << std::endl;
-                    active_responses++;
-                    return true;
+                    // Vérifier que la réponse provient bien de l'IP cible
+                    if (from.sin_addr.s_addr == addr.sin_addr.s_addr) {
+                        std::lock_guard<std::mutex> lock(output_mutex);
+                        //std::cout << "✓ " << ip << " - " << duration.count() << "ms" << std::endl;
+                        active_responses++;
+                        return true;
+                    }
                 }
             }
         }
